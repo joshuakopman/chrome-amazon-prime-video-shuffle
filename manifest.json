@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Amazon Prime Video Shuffle",
+  "version": "1.2.0",
+  "description": "Shuffle Amazon Prime Video episodes.",
+  "permissions": [
+    "storage"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_icon": "logo.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.amazon.com/*",
+        "https://www.primevideo.com/*"
+      ],
+      "js": [
+        "selectSeason.js",
+        "watchInterception.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
