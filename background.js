@@ -1,10 +1,12 @@
 const LOG = "[PrimeShuffle:bg]";
+let shuffleEnabled = true;
 
 function log(...args) {
   console.log(LOG, ...args);
 }
 
 function applyEnabledState(enabled) {
+  shuffleEnabled = Boolean(enabled);
   chrome.action.setBadgeText({ text: enabled ? "On" : "Off" });
   log("apply enabled state", { enabled });
 }
@@ -38,15 +40,16 @@ function rememberTitleUrl(url) {
   chrome.storage.local.set({ lastTitleUrl: titleUrl });
 }
 
-chrome.storage.local.set({ shuffleEnabled: true }, () => {
-  log("startup forced enabled", { enabled: true });
-  applyEnabledState(true);
+chrome.storage.local.get({ shuffleEnabled: true }, ({ shuffleEnabled: enabled }) => {
+  log("startup state", { enabled: Boolean(enabled) });
+  applyEnabledState(Boolean(enabled));
 });
 
 chrome.action.onClicked.addListener(() => {
-  log("action clicked: always-on mode", { enabled: true });
-  applyEnabledState(true);
-  chrome.storage.local.set({ shuffleEnabled: true });
+  const nextEnabled = !shuffleEnabled;
+  log("action clicked", { previous: shuffleEnabled, next: nextEnabled });
+  applyEnabledState(nextEnabled);
+  chrome.storage.local.set({ shuffleEnabled: nextEnabled });
 });
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {

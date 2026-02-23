@@ -529,22 +529,40 @@
       return;
     }
 
-    chrome.runtime.sendMessage({ type: "consumeShufflePending" }, (response) => {
-      if (chrome.runtime.lastError) {
-        log("consumeShufflePending failed", chrome.runtime.lastError.message);
+    chrome.storage.local.get({ shuffleEnabled: true }, ({ shuffleEnabled }) => {
+      if (!shuffleEnabled) {
+        clearState();
+        log("skip maybeRun: disabled");
         return;
       }
 
-      try {
-        chrome.runtime.sendMessage({ type: "rememberTitleUrl", url: window.location.href });
-      } catch (error) {
-        log("rememberTitleUrl failed", error);
-      }
+      chrome.runtime.sendMessage({ type: "consumeShufflePending" }, (response) => {
+        if (chrome.runtime.lastError) {
+          log("consumeShufflePending failed", chrome.runtime.lastError.message);
+          return;
+        }
 
-      runPicker();
+        try {
+          chrome.runtime.sendMessage({ type: "rememberTitleUrl", url: window.location.href });
+        } catch (error) {
+          log("rememberTitleUrl failed", error);
+        }
+
+        runPicker();
+      });
     });
   }
 
   log("title picker initialized", { href: window.location.href, path: window.location.pathname });
   maybeRun();
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || !changes.shuffleEnabled) {
+      return;
+    }
+    if (changes.shuffleEnabled.newValue !== true) {
+      clearState();
+      log("disabled: cleared title state");
+    }
+  });
 })();

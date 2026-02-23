@@ -3,7 +3,9 @@
     return;
   }
   window.__primeShuffleWatchHookInstalled = true;
+
   const LOG = "[PrimeShuffle:watch]";
+  let shuffleEnabled = true;
   let cachedTitleUrl = "";
   let lastAutoRedirectAt = 0;
   let lastEndedRedirectAt = 0;
@@ -26,10 +28,7 @@
     if (!node) {
       return false;
     }
-    if (node.offsetParent !== null) {
-      return true;
-    }
-    return node.getClientRects().length > 0;
+    return node.offsetParent !== null || node.getClientRects().length > 0;
   }
 
   function isPlayerDomPresent() {
@@ -63,6 +62,18 @@
     return /autoplay=1|atv_dp_btf_el_prime_hd_tv_/i.test(window.location.href);
   }
 
+  function isWatchRoute() {
+    const hasVideo = Boolean(document.querySelector("video"));
+    const hasWatchControls = Boolean(
+      document.querySelector(".atvwebplayersdk-seekbar-container") ||
+      document.querySelector(".atvwebplayersdk-infobar-container") ||
+      document.querySelector("button.atvwebplayersdk-playpause-button") ||
+      document.querySelector("button.atvwebplayersdk-nexttitle-button")
+    );
+    const hasTitleUi = hasTitlePageSeasonUi() || hasEpisodeListUi();
+    return !hasTitleUi && isPlayerDomPresent() && (hasVideo || hasWatchControls);
+  }
+
   function isNearEndOfMainVideo() {
     const video = document.querySelector("video");
     if (!video) {
@@ -88,6 +99,7 @@
       document.querySelector(".atvwebplayersdk-nextupcard-show") ||
       document.querySelector(".atvwebplayersdk-nextupcard-wrapper .atvwebplayersdk-nextupcard-button") ||
       document.querySelector(".atvwebplayersdk-nextupcard-episode");
+
     if (classBased && isElementVisible(classBased)) {
       return true;
     }
@@ -96,17 +108,14 @@
       if (!isElementVisible(node)) {
         return false;
       }
-      const text = (node.textContent || "").trim().toLowerCase();
-      return text === "next up";
+      return (node.textContent || "").trim().toLowerCase() === "next up";
     });
 
     if (!nextUpLabel) {
       return false;
     }
 
-    const container =
-      nextUpLabel.closest("section,article,aside,div") ||
-      nextUpLabel.parentElement;
+    const container = nextUpLabel.closest("section,article,aside,div") || nextUpLabel.parentElement;
     if (!container) {
       return false;
     }
@@ -137,6 +146,7 @@
         return node;
       }
     }
+
     return null;
   }
 
@@ -144,9 +154,11 @@
     if (!node) {
       return false;
     }
+
     for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
       node.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
     }
+
     return true;
   }
 
@@ -154,9 +166,11 @@
     const surface =
       document.querySelector('[aria-label="Web Player"]') ||
       document.querySelector(".atvwebplayersdk-player-container");
+
     if (!surface) {
       return false;
     }
+
     return simulateUserClick(surface);
   }
 
@@ -184,7 +198,7 @@
   }
 
   function shouldKickPlayback() {
-    return isWatchRoute() || isPlaybackIntentUrl();
+    return shuffleEnabled && (isWatchRoute() || isPlaybackIntentUrl());
   }
 
   function attemptKickPlayback() {
@@ -213,7 +227,6 @@
       if (result && typeof result.then === "function") {
         result
           .then(() => {
-            log("autoplay kick: video.play() resolved");
             setTimeout(() => {
               if (video.paused) {
                 fallbackKickPlayback("video.play() resolved but still paused");
@@ -256,23 +269,8 @@
       if (playbackKickAttempts >= 14) {
         clearInterval(playbackKickTimer);
         playbackKickTimer = null;
-        log("autoplay kick: stopped retries");
       }
     }, 800);
-  }
-
-  function isWatchRoute() {
-    const hasVideo = Boolean(document.querySelector("video"));
-    const hasWatchControls = Boolean(
-      document.querySelector(".atvwebplayersdk-seekbar-container") ||
-      document.querySelector(".atvwebplayersdk-infobar-container") ||
-      document.querySelector("button.atvwebplayersdk-playpause-button") ||
-      document.querySelector("button.atvwebplayersdk-nexttitle-button")
-    );
-
-    const hasTitleUi = hasTitlePageSeasonUi() || hasEpisodeListUi();
-    const watch = !hasTitleUi && isPlayerDomPresent() && (hasVideo || hasWatchControls);
-    return watch;
   }
 
   function getTitleUrl() {
@@ -280,22 +278,45 @@
     if (local) {
       return local;
     }
+    return cachedTitleUrl || "";
+  }
 
-    if (cachedTitleUrl) {
-      return cachedTitleUrl;
+  function redirectToTitle() {
+    if (!shuffleEnabled) {
+      return;
     }
 
-    return "";
+    const titleUrl = getTitleUrl();
+    if (!titleUrl) {
+      log("redirect skipped: no title url");
+      return;
+    }
+
+    log("redirecting to title", { from: window.location.href, to: titleUrl });
+
+    if (extensionAlive()) {
+      try {
+        chrome.runtime.sendMessage({ type: "setShufflePending", value: true });
+      } catch (error) {
+        log("set shuffle pending failed", error);
+      }
+    }
+
+    window.location.href = titleUrl;
   }
 
   function syncState() {
     if (!extensionAlive()) {
-      log("extension context unavailable during sync");
       return;
     }
 
-    chrome.storage.local.get({ lastTitleUrl: "" }, ({ lastTitleUrl }) => {
+    chrome.storage.local.get({ shuffleEnabled: true, lastTitleUrl: "" }, ({ shuffleEnabled: enabled, lastTitleUrl }) => {
+      shuffleEnabled = Boolean(enabled);
       cachedTitleUrl = lastTitleUrl || cachedTitleUrl;
+      if (!shuffleEnabled && playbackKickTimer) {
+        clearInterval(playbackKickTimer);
+        playbackKickTimer = null;
+      }
     });
   }
 
@@ -354,28 +375,89 @@
     return null;
   }
 
-  function redirectToTitle() {
-    const titleUrl = getTitleUrl();
-    if (!titleUrl) {
-      log("redirect skipped: no title url");
-      return;
+  function resolveNextUpCardControl(event) {
+    const selector = ".atvwebplayersdk-nextupcard-button,.atvwebplayersdk-nextupcard-wrapper,.atvwebplayersdk-nextupcard-show";
+
+    const direct = event.target?.closest?.(selector);
+    if (direct) {
+      return direct;
     }
 
-    log("redirecting to title", { from: window.location.href, to: titleUrl });
-
-    if (extensionAlive()) {
-      try {
-        chrome.runtime.sendMessage({ type: "setShufflePending", value: true });
-        log("set shuffle pending true");
-      } catch (error) {
-        log("set shuffle pending failed", error);
+    const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+    for (const node of path) {
+      if (!(node instanceof Element)) {
+        continue;
+      }
+      const candidate = node.closest?.(selector);
+      if (candidate) {
+        return candidate;
       }
     }
 
-    window.location.href = titleUrl;
+    return null;
+  }
+
+  function handleNextInteraction(event) {
+    if (!shuffleEnabled) {
+      return;
+    }
+
+    const inWatchLikeContext = isWatchRoute() || isPlaybackIntentUrl() || isPlayerDomPresent();
+    if (!inWatchLikeContext) {
+      return;
+    }
+
+    log("next interaction captured", { path: window.location.pathname, href: window.location.href });
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.stopImmediatePropagation) {
+      event.stopImmediatePropagation();
+    }
+
+    redirectToTitle();
+  }
+
+  function onNextEpisodePointerDown(event) {
+    const control = resolveNextEpisodeControl(event);
+    if (!control) {
+      return;
+    }
+    handleNextInteraction(event);
+  }
+
+  function onNextEpisodeClick(event) {
+    const control = resolveNextEpisodeControl(event);
+    if (!control) {
+      return;
+    }
+    handleNextInteraction(event);
+  }
+
+  function onNextUpCardInteraction(event) {
+    if (!shuffleEnabled) {
+      return;
+    }
+
+    const control = resolveNextUpCardControl(event);
+    if (!control) {
+      return;
+    }
+
+    log("next-up card interaction captured; redirecting to title");
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.stopImmediatePropagation) {
+      event.stopImmediatePropagation();
+    }
+
+    redirectToTitle();
   }
 
   function handleOrganicCompletion() {
+    if (!shuffleEnabled) {
+      return;
+    }
+
     const now = Date.now();
     if (now - lastEndedRedirectAt < 3000) {
       return;
@@ -403,6 +485,10 @@
   }
 
   function maybeHandleUpNextOverlay() {
+    if (!shuffleEnabled) {
+      return;
+    }
+
     const now = Date.now();
     if (now - lastAutoRedirectAt < 3000) {
       return;
@@ -413,12 +499,7 @@
       return;
     }
 
-    const hasNextButton = (() => {
-      const btn = document.querySelector("button.atvwebplayersdk-nexttitle-button");
-      return Boolean(btn && isElementVisible(btn));
-    })();
-    const hasNextUpOverlay = isNextUpOverlayVisible();
-    if (!hasNextButton && !hasNextUpOverlay) {
+    if (!isNextUpOverlayVisible()) {
       return;
     }
 
@@ -428,87 +509,6 @@
 
     lastAutoRedirectAt = now;
     log("up-next UI detected; redirecting to title for rerandomization");
-    redirectToTitle();
-  }
-
-  function resolveNextUpCardControl(event) {
-    const direct = event.target?.closest?.(
-      ".atvwebplayersdk-nextupcard-button,.atvwebplayersdk-nextupcard-wrapper,.atvwebplayersdk-nextupcard-show"
-    );
-    if (direct) {
-      return direct;
-    }
-
-    const path = typeof event.composedPath === "function" ? event.composedPath() : [];
-    for (const node of path) {
-      if (!(node instanceof Element)) {
-        continue;
-      }
-      const candidate = node.closest?.(
-        ".atvwebplayersdk-nextupcard-button,.atvwebplayersdk-nextupcard-wrapper,.atvwebplayersdk-nextupcard-show"
-      );
-      if (candidate) {
-        return candidate;
-      }
-    }
-    return null;
-  }
-
-  function handleNextInteraction(event) {
-    const inWatchLikeContext = isWatchRoute() || isPlaybackIntentUrl() || isPlayerDomPresent();
-    if (!inWatchLikeContext) {
-      log("next interaction ignored", {
-        isWatchRoute: isWatchRoute(),
-        isPlaybackIntentUrl: isPlaybackIntentUrl(),
-        path: window.location.pathname
-      });
-      return;
-    }
-
-    log("next interaction captured", { path: window.location.pathname, href: window.location.href });
-    event.preventDefault();
-    event.stopPropagation();
-    if (event.stopImmediatePropagation) {
-      event.stopImmediatePropagation();
-    }
-
-    redirectToTitle();
-  }
-
-  function onNextEpisodePointerDown(event) {
-    const control = resolveNextEpisodeControl(event);
-    if (!control) {
-      return;
-    }
-
-    log("next button pointerdown detected", {
-      className: control.className || "",
-      aria: control.getAttribute("aria-label") || "",
-      text: (control.textContent || "").trim()
-    });
-    handleNextInteraction(event);
-  }
-
-  function onNextEpisodeClick(event) {
-    const control = resolveNextEpisodeControl(event);
-    if (!control) {
-      return;
-    }
-    handleNextInteraction(event);
-  }
-
-  function onNextUpCardInteraction(event) {
-    const control = resolveNextUpCardControl(event);
-    if (!control) {
-      return;
-    }
-
-    log("next-up card interaction captured; redirecting to title");
-    event.preventDefault();
-    event.stopPropagation();
-    if (event.stopImmediatePropagation) {
-      event.stopImmediatePropagation();
-    }
     redirectToTitle();
   }
 
@@ -532,6 +532,15 @@
         return;
       }
 
+      if (changes.shuffleEnabled) {
+        shuffleEnabled = Boolean(changes.shuffleEnabled.newValue);
+        if (!shuffleEnabled && playbackKickTimer) {
+          clearInterval(playbackKickTimer);
+          playbackKickTimer = null;
+        }
+        log("storage change shuffleEnabled", shuffleEnabled);
+      }
+
       if (changes.lastTitleUrl) {
         cachedTitleUrl = changes.lastTitleUrl.newValue || cachedTitleUrl;
         localStorage.setItem("primeShuffleTitleUrl", cachedTitleUrl);
@@ -540,7 +549,6 @@
 
     chrome.runtime.sendMessage({ type: "getTitleUrl" }, (response) => {
       if (chrome.runtime.lastError) {
-        log("getTitleUrl failed", chrome.runtime.lastError.message);
         return;
       }
       cachedTitleUrl = response?.titleUrl || cachedTitleUrl;
